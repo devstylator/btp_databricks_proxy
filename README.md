@@ -6,6 +6,12 @@ table shared via **Delta Sharing** - the connectivity option your
 Databricks team supports (accessed through the officially supported
 `delta-sharing` client library, per their "Spark libraries" policy).
 
+Credential ownership: this app **never stores or requests** any
+Databricks/Azure AD client id or secret. SAP CI's own HTTP receiver adapter
+holds those credentials and mints the OAuth access token itself; this app
+only ever handles the short-lived token CI forwards to it (see
+[Architecture](#architecture) below).
+
 ## Why Delta Sharing, and why no Spark/JVM
 
 Delta Sharing is an open REST protocol; Databricks additionally supports an
@@ -26,38 +32,48 @@ Databricks compute cluster involved in serving a read.
 
 ```mermaid
 flowchart LR
-    CI[SAP Cloud Integration] -- "HTTPS + OAuth2 client_credentials (XSUAA)" --> SRV[FastAPI service<br/>Cloud Foundry, Python]
-    SRV -- "Delta Sharing REST (HTTPS)<br/>AAD service-principal OAuth token" --> DBX[(Databricks Delta Sharing<br/>metastore / recipient)]
+    CI[SAP Cloud Integration<br/>HTTP adapter: OAuth2 Client Credentials] -- "1. mints AAD token" --> AAD[(Azure AD / Entra ID<br/>token endpoint)]
+    CI -- "2. HTTPS POST /databricks/query<br/>Authorization: Bearer &lt;AAD token&gt;" --> SRV[FastAPI service<br/>Cloud Foundry, Python]
+    SRV -- "3. Delta Sharing REST (HTTPS)<br/>same Bearer token, forwarded as-is" --> DBX[(Databricks Delta Sharing<br/>metastore / recipient)]
 ```
 
-1. **SAP CI** calls `POST /databricks/query` using an OAuth2 Client
-   Credentials token issued by the app's **XSUAA** service instance,
-   scoped to `DatabricksReader`.
-2. The service validates the token and required scope (`app/auth.py`,
-   via `sap-xssec`).
+1. **SAP CI**'s HTTP receiver adapter is configured with an OAuth2 Client
+   Credentials artifact (client id/secret/token endpoint/scope for the
+   Databricks Delta Sharing recipient's Entra ID service principal) and
+   mints its own Azure AD access token before each call.
+2. CI calls `POST /databricks/query` with that token as a normal
+   `Authorization: Bearer <token>` header. This app only extracts the
+   token (`app/auth.py`) - it does not validate it locally, since it never
+   has the client secret needed to do so meaningfully.
 3. It reads the requested `share.schema.table` via the `delta-sharing`
-   client (`app/delta_sharing_client.py`), authenticating with the Azure AD
-   (Entra ID) service principal your Databricks team already provisioned -
-   the client acquires the OAuth token itself using the
-   `oauth_client_credentials` profile.
-4. It applies an allow-listed column selection, filters, and a row limit
+   client (`app/delta_sharing_client.py`), using the **forwarded token
+   directly** as a Delta Sharing `bearer_token` (v1) profile credential -
+   no separate OAuth exchange happens in this app.
+4. Databricks validates the token's signature, audience, scope and expiry
+   itself; an invalid/expired token simply fails the Delta Sharing request
+   (surfaced by this app as an HTTP 502), so there's no local
+   authentication logic to get wrong.
+5. It applies an allow-listed column selection, filters, and a row limit
    entirely client-side in pandas (`app/query_builder.py`) - filter values
    are evaluated with pandas boolean indexing, never turned into a query
    string, so there is no SQL/predicate-injection surface.
-5. The result (`{ columns, rows }`) is returned as JSON to CI.
+6. The result (`{ columns, rows }`) is returned as JSON to CI.
+
+See [openapi.yaml](openapi.yaml) for the full request/response schema (also
+served live at `/docs` and `/openapi.json` via FastAPI).
 
 ## Project layout
 
 ```
 app/
   main.py                  # FastAPI app, POST /databricks/query, GET /health
-  auth.py                   # XSUAA JWT validation (sap-xssec)
-  delta_sharing_client.py   # builds the Delta Sharing profile and reads a table into pandas
+  auth.py                   # extracts the CI-forwarded bearer token (no local validation)
+  delta_sharing_client.py   # uses the forwarded token as a Delta Sharing bearer_token profile
   query_builder.py          # allow-listed, injection-safe column/filter/limit logic
+openapi.yaml                  # OpenAPI 3.0 spec for the exposed API
 requirements.txt             # delta-sharing + FastAPI stack
 Procfile                     # gunicorn/uvicorn start command (Cloud Foundry python_buildpack)
 runtime.txt                   # Python version pin
-xs-security.json              # XSUAA scope/role for the CI OAuth2 client
 mta.yaml                      # Cloud Foundry multi-target app descriptor
 ```
 
@@ -67,10 +83,13 @@ mta.yaml                      # Cloud Foundry multi-target app descriptor
 - Python 3.11 (match `runtime.txt`) and `pip`
 - Cloud Foundry CLI + `multiapps` plugin (`cf install-plugin multiapps`)
 - The Delta Sharing **endpoint URL** (metastore/recipient path, provided by
-  your Databricks team)
-- The Entra ID (Azure AD) app registration's **client id, client secret,
-  tenant id / token endpoint, and scope** your Databricks team already
-  uses for Delta Sharing access
+  your Databricks team) - this is the only configuration this app needs;
+  it is not secret (just a URL), but is still supplied via a bound service
+  rather than hardcoded
+- For **local testing only**: an Azure AD access token for the same
+  service principal/scope CI will use (e.g. obtained with `curl` against
+  the tenant's OAuth2 token endpoint using the client id/secret your
+  Databricks team provisioned) - this app does not mint tokens itself
 
 ### 2. Install dependencies
 ```bash
@@ -85,35 +104,27 @@ avoid this.
 
 ### 3. Local development
 ```bash
-export AUTH_DISABLED=true   # skip XSUAA validation locally only
 export DELTA_SHARING_ENDPOINT=https://<workspace-host>/api/2.0/delta-sharing/metastores/<metastore-id>/recipients/<recipient-id>
-export AZURE_TOKEN_ENDPOINT=https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
-export AZURE_CLIENT_ID=<entra-app-client-id>
-export AZURE_CLIENT_SECRET=<entra-app-client-secret>
-export AZURE_SCOPE=<client-id>/.default
 uvicorn app.main:app --reload
 ```
-Then call, e.g.:
+Then call, e.g. (substitute a real Azure AD access token obtained as
+described in Prerequisites above):
 ```bash
 curl -X POST http://localhost:8000/databricks/query \
   -H 'content-type: application/json' \
+  -H 'Authorization: Bearer <azure-ad-access-token>' \
   -d '{"share":"my_share","schema_name":"my_schema","table":"my_table","columns":"*","filters":"[{\"column\":\"region\",\"op\":\"=\",\"value\":\"EMEA\"}]","top":50}'
 ```
 
-### 4. Provide credentials for the deployed app
-Create a user-provided service **before** deploying the MTA (referenced as
-an `existing-service` resource in `mta.yaml`, so the client secret is never
-committed to this repo):
+### 4. Provide configuration for the deployed app
+Create a user-provided service **before** deploying (referenced as an
+`existing-service` resource in `mta.yaml`):
 ```bash
 cf create-user-provided-service databricks-connector-credentials -p \
-  '{"DELTA_SHARING_ENDPOINT":"https://<workspace-host>/api/2.0/delta-sharing/metastores/<metastore-id>/recipients/<recipient-id>","AZURE_TOKEN_ENDPOINT":"https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token","AZURE_CLIENT_ID":"...","AZURE_CLIENT_SECRET":"...","AZURE_SCOPE":"<client-id>/.default"}'
+  '{"DELTA_SHARING_ENDPOINT":"https://<workspace-host>/api/2.0/delta-sharing/metastores/<metastore-id>/recipients/<recipient-id>"}'
 ```
-For stronger secret handling, replace this with the BTP **Credential
-Store** service and read the secret from there instead of a plain UPS.
-
-> Never commit real Delta Sharing / Azure AD credentials to source control.
-> Secrets belong only in the bound user-provided service (or a proper
-> Credential Store), never in files tracked by git.
+No Azure AD client id/secret is stored here (or anywhere in this app) -
+those live only in SAP CI's OAuth2 Client Credentials artifact.
 
 ### 5. Deploy to Cloud Foundry
 This repo is deployed with a plain `cf push` + `manifest.yml` (the `mbt`
@@ -121,29 +132,43 @@ build tool / `multiapps` plugin aren't installed in this environment).
 `mta.yaml` is kept for reference if you switch to a full MTA deploy later.
 
 ```bash
-cf create-service xsuaa application databricks-connector-xsuaa -c xs-security.json   # if not already created
-cf create-user-provided-service databricks-connector-credentials -p '{...}'          # see step 4 above
+cf create-user-provided-service databricks-connector-credentials -p '{...}'   # see step 4 above
 cf push -f manifest.yml
 ```
 
-### 6. Wire up SAP Cloud Integration
-1. In the BTP subaccount, create an OAuth2 client for CI against the app's
-   XSUAA instance (or assign the `DatabricksConnectorReader` role
-   collection to an existing service-to-service client).
-2. In CI, configure the HTTP receiver adapter with OAuth2 Client
-   Credentials, pointing at the XSUAA token endpoint and the deployed
-   app's `/databricks/query` URL.
+### 6. Configure SAP Cloud Integration
+1. In CI, create an **OAuth2 Client Credentials** artifact (Security
+   Material) holding the Databricks Delta Sharing recipient's Entra ID
+   **client id, client secret, token endpoint, and scope** (the same
+   values your Databricks team already provisioned).
+2. Configure the **HTTP receiver adapter** on the iFlow step that calls
+   this app to use that OAuth2 Client Credentials artifact - CI will mint
+   the token itself and set the `Authorization: Bearer <token>` header
+   automatically on each call.
+3. Point the adapter at this app's `/databricks/query` URL, with the JSON
+   body described in [openapi.yaml](openapi.yaml).
+
+> Since this app forwards whatever bearer token it receives straight to
+> Databricks without local validation, treat network reachability to
+> `/databricks/query` as part of your access control boundary (see
+> Networking notes below) - anyone who can reach the endpoint with *some*
+> bearer token can attempt a Delta Sharing call, though only a token valid
+> for the Databricks recipient will actually succeed.
 
 ## Networking notes
-- Delta Sharing's REST endpoint and Azure AD's token endpoint are reached
-  over public HTTPS by default - no Cloud Connector needed unless your
-  workspace enforces private-link/IP allow-listing.
+- Delta Sharing's REST endpoint is reached over public HTTPS by default -
+  no Cloud Connector needed unless your workspace enforces private-link/IP
+  allow-listing.
 - If Databricks enforces IP allow-listing, add Cloud Foundry's outbound IP
   ranges to the allow-list.
 - If Databricks is only reachable via a private network, add the
   `connectivity` service (commented out in `mta.yaml`) and route through
   an on-premise Cloud Connector virtual host instead of calling the host
   directly.
+- Consider restricting inbound access to `/databricks/query` (e.g. a CF
+  route service, IP allow-list, or mutual TLS) since this app no longer
+  performs its own caller authentication - it relies entirely on
+  Databricks rejecting invalid forwarded tokens.
 
 ## Extending
 - **Predicate pushdown for large tables:** filters currently run

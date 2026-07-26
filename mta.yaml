@@ -15,7 +15,6 @@ modules:
       disk-quota: 1024M
       command: gunicorn -k uvicorn.workers.UvicornWorker -w 2 --bind 0.0.0.0:$PORT app.main:app
     requires:
-      - name: databricks-connector-xsuaa
       - name: databricks-connector-credentials
       # Uncomment if Databricks is only reachable via an on-premise/private
       # network route through the Cloud Connector:
@@ -26,19 +25,12 @@ modules:
           srv-url: ${default-url}
 
 resources:
-  - name: databricks-connector-xsuaa
-    type: org.cloudfoundry.managed-service
-    parameters:
-      service: xsuaa
-      service-plan: application
-      path: ./xs-security.json
-      config:
-        xsappname: databricks-connector-${org}-${space}
-
   # Create this user-provided service BEFORE deploying the MTA, e.g.:
   #   cf create-user-provided-service databricks-connector-credentials -p \
-  #     '{"DELTA_SHARING_ENDPOINT":"https://<workspace-host>/api/2.0/delta-sharing/metastores/<metastore-id>/recipients/<recipient-id>","AZURE_TOKEN_ENDPOINT":"https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token","AZURE_CLIENT_ID":"...","AZURE_CLIENT_SECRET":"...","AZURE_SCOPE":"<client-id>/.default"}'
-  # Never commit the client secret to this file or to git.
+  #     '{"DELTA_SHARING_ENDPOINT":"https://<workspace-host>/api/2.0/delta-sharing/metastores/<metastore-id>/recipients/<recipient-id>"}'
+  # Note: no Azure AD client id/secret is stored here anymore - SAP CI mints
+  # its own Delta Sharing bearer token and forwards it on each request (see
+  # README.md "Configure SAP Cloud Integration").
   - name: databricks-connector-credentials
     type: org.cloudfoundry.existing-service
 

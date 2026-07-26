@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: Databricks Delta Sharing Connector
+  version: "1.0.0"
+  description: >
+    Read-only proxy, deployed on SAP BTP Cloud Foundry, that lets SAP Cloud
+    Integration (CI) query a Databricks table shared via Delta Sharing.
+
+    Authentication: the caller (SAP CI) must supply an `Authorization: Bearer
+    <token>` header containing an Azure AD / Entra ID access token that CI's
+    own HTTP receiver adapter already obtained via an OAuth2 Client
+    Credentials flow, scoped for the Databricks Delta Sharing recipient's
+    service principal. This app forwards that token, unmodified, to
+    Databricks - it never mints or stores the token itself, so an invalid or
+    expired token surfaces as a 502 (upstream failure) rather than a local
+    401/403.
+
+servers:
+  - url: https://databricks-connector.cfapps.eu10-004.hana.ondemand.com
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /databricks/query:
+    post:
+      summary: Query a Databricks Delta Sharing table
+      description: >
+        Reads the requested `share.schema_name.table`, applies an
+        allow-listed column selection / filter / row-limit entirely
+        client-side in pandas, and returns the result as JSON.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryRequest"
+            examples:
+              basic:
+                summary: Fetch all columns, top 50 rows
+                value:
+                  share: my_share
+                  schema_name: my_schema
+                  table: my_table
+                  top: 50
+              filtered:
+                summary: Filter and select specific columns
+                value:
+                  share: my_share
+                  schema_name: my_schema
+                  table: my_table
+                  columns: "col_a,col_b,col_c"
+                  filters: '[{"column":"region","op":"=","value":"EMEA"}]'
+                  top: 100
+      responses:
+        "200":
+          description: Query result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Invalid request (bad share/schema/table name, columns, or filters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or empty bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >
+            The upstream Delta Sharing request failed (e.g. the forwarded
+            bearer token was rejected by Databricks, or was invalid/expired)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Azure AD / Entra ID access token minted by SAP CI's HTTP adapter
+        (OAuth2 Client Credentials), forwarded unmodified to Databricks.
+
+  schemas:
+    QueryRequest:
+      type: object
+      required:
+        - share
+        - schema_name
+        - table
+      properties:
+        share:
+          type: string
+          description: Delta Sharing share name
+          pattern: "^[A-Za-z0-9_-]{1,255}$"
+          example: my_share
+        schema_name:
+          type: string
+          description: Delta Sharing schema name
+          pattern: "^[A-Za-z0-9_-]{1,255}$"
+          example: my_schema
+        table:
+          type: string
+          description: Delta Sharing table name
+          pattern: "^[A-Za-z0-9_-]{1,255}$"
+          example: my_table
+        columns:
+          type: string
+          description: Comma-separated allow-list of columns to return, or "*" for all
+          default: "*"
+          example: "col_a,col_b,col_c"
+        filters:
+          type: string
+          nullable: true
+          description: >
+            JSON array of `{"column","op","value"}` filters, applied via
+            pandas boolean indexing (never turned into a query string).
+            Supported ops: =, !=, <, <=, >, >=, LIKE.
+          example: '[{"column":"region","op":"=","value":"EMEA"}]'
+        top:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 1000
+          description: Maximum number of rows to return
+
+    QueryResult:
+      type: object
+      properties:
+        columns:
+          type: array
+          items:
+            type: string
+          example: ["col_a", "col_b", "col_c"]
+        rows:
+          type: array
+          items:
+            type: array
+            items: {}
+          description: Row values, in the same order as `columns`
+          example: [["v1", "v2", 3], ["v4", "v5", 6]]
+
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+          example: 'Invalid share: "../etc"'

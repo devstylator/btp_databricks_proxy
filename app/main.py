@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from app.auth import require_scope
+from app.auth import require_bearer_token
 from app.delta_sharing_client import MAX_FETCH_ROWS, ReadError, read_table
 from app.query_builder import QueryError, apply_query
 
@@ -32,9 +32,9 @@ async def health():
 
 
 @app.post("/databricks/query")
-async def query_table(payload: QueryRequest, _ctx=Depends(require_scope("DatabricksReader"))):
+async def query_table(payload: QueryRequest, bearer_token: str = Depends(require_bearer_token)):
     try:
-        df = read_table(payload.share, payload.schema_name, payload.table, limit=MAX_FETCH_ROWS)
+        df = read_table(payload.share, payload.schema_name, payload.table, bearer_token, limit=MAX_FETCH_ROWS)
         result_df = apply_query(df, payload.columns, payload.filters, payload.top)
     except (QueryError, ReadError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
