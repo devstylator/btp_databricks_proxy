@@ -1,0 +1,13 @@
+# Open-source Delta Sharing Python client - no Spark/JVM, no cluster needed.
+# Supports the Databricks "oauth_client_credentials" profile type (Azure AD
+# service principal) natively.
+delta-sharing==1.3.*
+pandas==2.2.*
+
+fastapi==0.115.*
+pydantic==2.9.*
+uvicorn[standard]==0.32.*
+gunicorn==23.0.*
+
+sap-xssec==4.*
+cfenv==0.5.*

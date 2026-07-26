@@ -1,0 +1,29 @@
+{
+  "xsappname": "databricks-connector",
+  "tenant-mode": "dedicated",
+  "description": "Security descriptor for the Databricks connector/proxy consumed by SAP Cloud Integration",
+  "scopes": [
+    {
+      "name": "$XSAPPNAME.DatabricksReader",
+      "description": "Allows querying Databricks tables via the connector"
+    }
+  ],
+  "authorities": ["$XSAPPNAME.DatabricksReader"],
+  "role-templates": [
+    {
+      "name": "DatabricksReader",
+      "description": "Consumer role for SAP Cloud Integration",
+      "scope-references": ["$XSAPPNAME.DatabricksReader"]
+    }
+  ],
+  "role-collections": [
+    {
+      "name": "DatabricksConnectorReader",
+      "description": "Assign this role collection to the OAuth2 client used by SAP Cloud Integration",
+      "role-template-references": ["$XSAPPNAME.DatabricksReader"]
+    }
+  ],
+  "oauth2-configuration": {
+    "grant-types": ["client_credentials"]
+  }
+}
