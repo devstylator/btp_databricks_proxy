@@ -1,0 +1,13 @@
+{
+  "xsappname": "databricks-connector",
+  "tenant-mode": "dedicated",
+  "scopes": [
+    {
+      "name": "$XSAPPNAME.Proxy",
+      "description": "Invoke the Databricks proxy"
+    }
+  ],
+  "authorities": [
+    "$XSAPPNAME.Proxy"
+  ]
+}

@@ -1,9 +1,10 @@
 ---
 applications:
-  - name: databricks-connector
+  - name: databricks-connector-xs
     buildpacks:
       - python_buildpack
     memory: 1024M
     disk_quota: 1024M
     services:
       - databricks-connector-credentials
+      - databricks-connector-xsuaa

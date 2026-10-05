@@ -1,8 +1,11 @@
 # Open-source Delta Sharing Python client - no Spark/JVM, no cluster needed.
-# Used here in "bearer_token" (v1 profile) mode: the token is minted by SAP
-# Cloud Integration, not by this app.
+# The Databricks token is supplied by SAP Cloud Integration in the
+# Databricks-Bearer header and used in "bearer_token" (v1 profile) mode.
 delta-sharing==1.3.*
 pandas==2.2.*
+
+# Verify XSUAA JWT signatures using the bound service's public signing keys.
+PyJWT[crypto]==2.10.*
 
 fastapi==0.115.*
 pydantic==2.9.*

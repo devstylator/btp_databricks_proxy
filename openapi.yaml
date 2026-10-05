@@ -6,20 +6,17 @@ info:
     Read-only proxy, deployed on SAP BTP Cloud Foundry, that lets SAP Cloud
     Integration (CI) query a Databricks table shared via Delta Sharing.
 
-    Authentication: the caller (SAP CI) must supply an `Authorization: Bearer
-    <token>` header containing an Azure AD / Entra ID access token that CI's
-    own HTTP receiver adapter already obtained via an OAuth2 Client
-    Credentials flow, scoped for the Databricks Delta Sharing recipient's
-    service principal. This app forwards that token, unmodified, to
-    Databricks - it never mints or stores the token itself, so an invalid or
-    expired token surfaces as a 502 (upstream failure) rather than a local
-    401/403.
+    POST /databricks/query requires an XSUAA-issued JWT in the Authorization
+    header and a separate raw Databricks access token in the Databricks-Bearer
+    header. The XSUAA token is validated locally and is never forwarded to
+    Databricks; the Databricks token is used for the Delta Sharing request.
 
 servers:
-  - url: https://databricks-connector.cfapps.eu10-004.hana.ondemand.com
+  - url: https://databricks-connector-xs.cfapps.eu10-004.hana.ondemand.com
 
 security:
-  - bearerAuth: []
+  - xsuaaBearer: []
+    databricksBearer: []
 
 paths:
   /health:
@@ -44,7 +41,8 @@ paths:
       description: >
         Reads the requested `share.schema_name.table`, applies an
         allow-listed column selection / filter / row-limit entirely
-        client-side in pandas, and returns the result as JSON.
+        client-side in pandas, and returns the result as JSON. Both XSUAA and
+        Databricks headers are required.
       requestBody:
         required: true
         content:
@@ -82,15 +80,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
-          description: Missing or empty bearer token
+          description: Missing or invalid XSUAA token, or missing/invalid Databricks-Bearer header
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: XSUAA client ID is not allowed or the token lacks the required scope
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "502":
-          description: >
-            The upstream Delta Sharing request failed (e.g. the forwarded
-            bearer token was rejected by Databricks, or was invalid/expired)
+          description: The upstream Delta Sharing request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: XSUAA is not configured or its signing keys are unavailable
           content:
             application/json:
               schema:
@@ -98,13 +106,20 @@ paths:
 
 components:
   securitySchemes:
-    bearerAuth:
+    xsuaaBearer:
       type: http
       scheme: bearer
       bearerFormat: JWT
       description: >
-        Azure AD / Entra ID access token minted by SAP CI's HTTP adapter
-        (OAuth2 Client Credentials), forwarded unmodified to Databricks.
+        XSUAA-signed CPI token. The proxy validates signature, issuer,
+        audience, required scope, and allowed client ID.
+    databricksBearer:
+      type: apiKey
+      in: header
+      name: Databricks-Bearer
+      description: >
+        Raw Databricks access token provided by CPI. This value is used only
+        as the Delta Sharing bearer token; do not include a Bearer prefix.
 
   schemas:
     QueryRequest:

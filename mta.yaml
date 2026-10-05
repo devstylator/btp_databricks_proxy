@@ -6,7 +6,7 @@ parameters:
   enable-parallel-deployments: true
 
 modules:
-  - name: databricks-connector-srv
+  - name: databricks-connector-xs
     type: python
     path: .
     parameters:
@@ -16,6 +16,7 @@ modules:
       command: gunicorn -k uvicorn.workers.UvicornWorker -w 2 --bind 0.0.0.0:$PORT app.main:app
     requires:
       - name: databricks-connector-credentials
+      - name: databricks-connector-xsuaa
       # Uncomment if Databricks is only reachable via an on-premise/private
       # network route through the Cloud Connector:
       # - name: databricks-connector-connectivity
@@ -25,13 +26,16 @@ modules:
           srv-url: ${default-url}
 
 resources:
-  # Create this user-provided service BEFORE deploying the MTA, e.g.:
+  # Create this user-provided service BEFORE deploying, e.g.:
   #   cf create-user-provided-service databricks-connector-credentials -p \
   #     '{"DELTA_SHARING_ENDPOINT":"https://<workspace-host>/api/2.0/delta-sharing/metastores/<metastore-id>/recipients/<recipient-id>"}'
-  # Note: no Azure AD client id/secret is stored here anymore - SAP CI mints
-  # its own Delta Sharing bearer token and forwards it on each request (see
-  # README.md "Configure SAP Cloud Integration").
+  # Databricks access tokens are supplied per request by CPI in the
+  # Databricks-Bearer header; they are not stored in this service.
   - name: databricks-connector-credentials
+    type: org.cloudfoundry.existing-service
+
+  # Create this XSUAA service using xs-security.json before deploying.
+  - name: databricks-connector-xsuaa
     type: org.cloudfoundry.existing-service
 
   # - name: databricks-connector-connectivity

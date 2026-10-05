@@ -4,3 +4,4 @@ __pycache__/
 .env
 *.log
 mta_archives/
+.local-deployment-notes.md

@@ -2,16 +2,10 @@
 Reads a Databricks Delta Sharing table into a pandas DataFrame using the
 official open-source `delta-sharing` Python client - no Spark/JVM needed.
 
-Authentication: this app never mints its own Databricks/Azure AD token and
-never stores the underlying client id/secret. SAP Cloud Integration's HTTP
-receiver adapter obtains an Entra ID access token itself (OAuth2 Client
-Credentials, configured in CPI against the Databricks Delta Sharing
-recipient's service principal) and forwards it to this app as a normal
-`Authorization: Bearer <token>` header (see app/auth.py). That token is
-used here, unmodified, as a Delta Sharing "bearer_token" (v1) profile -
-Databricks itself validates the token's signature/audience/scope/expiry
-when we use it, so this app doesn't need to (and can't, since it never
-sees the secret).
+Authentication: SAP Cloud Integration authenticates to this proxy with an
+XSUAA JWT in the Authorization header. Separately, CPI passes the Databricks
+access token in the `Databricks-Bearer` header; this token is used here,
+unmodified, as a Delta Sharing "bearer_token" (v1) profile.
 
 Required configuration (see README.md for how to supply it securely via
 a bound user-provided service):
@@ -35,8 +29,8 @@ NAME = re.compile(r"^[A-Za-z0-9_\-]{1,255}$")
 
 # Upper bound on rows fetched per request, independent of the caller's
 # "top" - filters are applied client-side (see query_builder.py), so we
-# must fetch a bounded superset before filtering rather than relying on
-# the Delta Sharing server to filter for us.
+# must fetch a bounded superset before filtering rather than relying on the
+# Delta Sharing server to filter for us.
 MAX_FETCH_ROWS = 50000
 
 # Name of the bound user-provided service holding the (non-secret) Delta
@@ -71,9 +65,8 @@ def read_table(
         if not value or not NAME.match(value):
             raise ReadError(f'Invalid {name}: "{value}"')
 
-    # Built fresh per request (never cached): the bearer token is supplied
-    # by the caller (CPI) on every call and may rotate/expire independently
-    # of this process's lifetime.
+    # Built fresh per request (never cached): the Databricks bearer token is
+    # supplied by CPI on every call and may rotate/expire independently.
     profile = DeltaSharingProfile(
         share_credentials_version=1,
         endpoint=_delta_sharing_endpoint(),
